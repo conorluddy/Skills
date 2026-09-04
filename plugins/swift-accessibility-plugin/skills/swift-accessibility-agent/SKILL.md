@@ -1,6 +1,6 @@
 ---
 name: swift-accessibility-agent
-description: Audit, fix, and initialise SwiftUI accessibility modifiers so your app is navigable by both VoiceOver users and AI agents. Use this skill whenever a user mentions accessibility audit, accessibility modifiers, making an iOS app navigable by agents, adding VoiceOver support, or coordinate tracking for SwiftUI.
+description: Audit, fix, and initialise SwiftUI accessibility so an app is navigable by VoiceOver users, XCUITest, and AI agents. Use this skill whenever a user mentions an accessibility audit, accessibility modifiers, identifiers/labels/hints/values/traits, VoiceOver, Dynamic Type, Reduce Motion, colour contrast, making an iOS app navigable by agents, CoordinateTracker, trackElement, or wants to improve SwiftUI accessibility coverage. Also trigger on "audit accessibility", "add accessibility", "make navigable", "init accessibility", "VoiceOver can't reach X", or a ticket whose acceptance criteria list VoiceOver or Dynamic Type. Three modes: init (scaffold CoordinateTracker infrastructure), audit (report gaps), fix (add missing modifiers and repair the traps that silently break VoiceOver).
 compatibility: Requires Xcode project with SwiftUI views
 allowed-tools: Bash(find:*) Read Write Edit Glob Grep
 ---
@@ -8,8 +8,9 @@ allowed-tools: Bash(find:*) Read Write Edit Glob Grep
 # Swift Accessibility Agent
 
 Make SwiftUI apps fully navigable by VoiceOver, XCTest, and AI agents by ensuring every
-interactive element carries the five accessibility properties: **identifier**, **label**,
-**hint**, **value**, and **traits**.
+interactive element carries the five accessibility properties — **identifier**, **label**,
+**hint**, **value**, **traits** — and by catching the modifiers that quietly *remove*
+accessibility that was already working.
 
 ## Why this matters
 
@@ -18,6 +19,12 @@ Most AI agents navigate iOS apps via screenshots — slow (~2-5s per step), expe
 lets agents query structured text (~200-400 tokens), tap by identifier (deterministic),
 and verify via logs — no vision model needed. The same work also makes the app properly
 accessible to humans using VoiceOver, Switch Control, and Voice Control.
+
+The failure mode worth designing against: an app whose *missing* modifiers are obvious and
+get fixed, while its *wrong* ones survive the pass untouched. A screen with no labels reads
+badly. A screen with a well-meaning `.accessibilityElement(children: .combine)` wrapped
+around its only button is unusable, and looks fine in code review. Read "Traps that silently
+break VoiceOver" below before fixing anything.
 
 ## Three modes
 
@@ -53,16 +60,25 @@ or says "audit", "check accessibility", "what's missing".
 2. Find all `.swift` files in scope
 3. For each file, scan for interactive SwiftUI elements (see "What to scan for" below)
 4. For each element, check which of the five properties are present
-5. Produce a structured report:
+5. Check the same files for the traps in "Traps that silently break VoiceOver" — these
+   are findings, not gaps, and belong at the top of the report where they can't be missed
+6. Produce a structured report:
 
 ```
 ## Accessibility Audit Report
+
+### Blockers
+
+| File | Line | Finding |
+|------|------|---------|
+| ActiveGoalScreen.swift | 85 | `children: .combine` spans the "Mark complete" button — action unreachable |
+| ActiveGoalScreen.swift | 86 | Explicit label on combined element drops the countdown from the announcement |
 
 ### file: Views/SessionTimerView.swift
 
 | Line | Element | Type | identifier | label | hint | value | traits |
 |------|---------|------|:---:|:---:|:---:|:---:|:---:|
-| 23   | "Save"  | Button | — | — | — | n/a | auto |
+| 23   | "Save"  | Button | — | — | n/a | n/a | auto |
 | 45   | HStack  | List row | — | — | — | — | — |
 | 67   | Toggle  | Toggle | — | OK | — | — | auto |
 
@@ -70,18 +86,19 @@ or says "audit", "check accessibility", "what's missing".
 - Files scanned: 12
 - Interactive elements found: 34
 - Fully accessible: 8 (24%)
+- Blockers: 2
 - Missing identifiers: 26
 - Missing labels: 18
-- Missing hints: 22
 - Missing values: 14 (of elements that carry state)
 ```
 
-**Important**: `value` only applies to elements that carry state (Toggle, Picker,
-Slider, Stepper, list rows with data, progress indicators). Don't flag buttons or
-navigation links as missing `value` unless they have dynamic state. `traits` are
-often inferred automatically by SwiftUI (Button gets `.button`, etc.) — only flag
-when traits are ambiguous or missing (e.g. a tappable HStack that should be marked
-as a button).
+Mark a cell `n/a` rather than `—` when the property genuinely doesn't apply. `value` only
+applies to elements that carry state (Toggle, Picker, Slider, Stepper, list rows with data,
+progress indicators, a text field with a character budget). `hint` applies only where the
+outcome isn't already obvious from the label — see the hints guidance below. `traits` are
+usually inferred by SwiftUI (Button gets `.button`) — flag them only when ambiguous, such as
+a tappable `HStack` that never announces itself as a button. Reporting a button as "missing"
+a value it should never have inflates the gap count and buries the findings that matter.
 
 ### 3. `fix` — Add missing accessibility modifiers
 
@@ -94,12 +111,84 @@ main workhorse mode.
 **Steps**:
 
 1. Run the audit logic first to identify gaps
-2. For each element with gaps, add the missing modifiers
-3. Follow the naming convention and modifier patterns below
-4. If `--track` or "with tracking" is mentioned, also add `.trackElement()` calls
+2. Repair the blockers before adding anything — a screen whose button is unreachable is
+   not improved by giving that button a better label
+3. For each element with gaps, add the missing modifiers
+4. Follow the naming convention and modifier patterns below
+5. If `--track` or "with tracking" is mentioned, also add `.trackElement()` calls
    (requires `init` to have been run first — check for CoordinateTracker.swift)
-5. Show the user what changed before applying (or apply directly if they've asked
+6. Show the user what changed before applying (or apply directly if they've asked
    for that)
+
+## Traps that silently break VoiceOver
+
+These are the highest-value findings in any real codebase, because the code compiles, looks
+deliberate, and reads as *more* accessible than the code without them.
+
+### `children: .combine` wrapped around an interactive element
+
+```swift
+// Broken: the button is absorbed into the combined element.
+VStack {
+    Text(goal.title)
+    Text(countdown)
+    Button("Mark complete") { complete() }
+}
+.accessibilityElement(children: .combine)
+.accessibilityLabel("This week: \(goal.title)")
+```
+
+Combining flattens descendants into one element. A VoiceOver user hears the goal and has no
+way to complete it — the app's only action has been narrated out of existence. Combine the
+informational part and leave interactive children outside it:
+
+```swift
+VStack {
+    summary            // its own combined element, labelled
+    Button("Mark complete") { complete() }
+        .accessibilityIdentifier(AccessibilityIdentifier.completeButton)
+}
+```
+
+Same trap with `NavigationLink` inside a combined list row, and with a container carrying
+`.onTapGesture`. Rule of thumb: if the subtree can be activated, it stays its own element.
+
+### An explicit label on a combined element replaces its children
+
+`.accessibilityElement(children: .combine)` builds an announcement from the children's own
+labels. Adding `.accessibilityLabel(...)` afterwards **replaces** that, so anything you
+forget to restate is now silent. If a screen shows a title, a description, a countdown and
+an urgency state, and the explicit label mentions three of them, the fourth is simply gone —
+and nothing in the code says so.
+
+When you write an explicit label over combined children, enumerate what the element displays
+and confirm each fact appears. Where several surfaces describe the same model (a screen, a
+widget, a Lock Screen accessory), build the sentence in one pure function they all call
+rather than in each view — the divergence is otherwise invisible until someone listens to it.
+
+### Formatted numbers read as loose digits
+
+A monospaced `3d 21h 5m` is announced as "3 2 1 5". Any compact time, score, ratio or version
+string needs a spoken form distinct from its displayed form:
+
+```swift
+Text(CountdownFormatter.displayString(remaining: remaining))
+    .accessibilityLabel(CountdownFormatter.accessibilityLabel(remaining: remaining))
+    // "3 days, 21 hours, 5 minutes remaining"
+```
+
+### Status carried only by colour
+
+A red background meaning "urgent" does not exist for a VoiceOver user, and doesn't survive
+Increase Contrast, Smart Invert, or a tinted Lock Screen widget either. Every colour-coded
+state needs a text equivalent that reaches the accessibility layer — and the check is that
+the state's own label appears in the announcement, not that the colour has a name somewhere.
+
+### Decoration that isn't hidden, and duplication that is spoken twice
+
+A chevron announced as "chevron.right", a divider announced as "image", a section header
+repeated inside the row it heads. Hide decoration with `.accessibilityHidden(true)`, and
+hide text that a parent's label already covers.
 
 ## What to scan for
 
@@ -134,6 +223,12 @@ These SwiftUI elements need accessibility modifiers when interactive or informat
   screen should have `.accessibilityIdentifier("screen_name_view")` so agents can
   orient themselves
 
+### Also worth flagging while you are in the file
+- `.disabled(...)` with no explanation of *why* — VoiceOver says "dimmed" and stops there
+- Buttons presented from `.confirmationDialog` / `.alert` whose labels duplicate a button
+  on the screen beneath: `app.buttons["Lock it in"]` then matches two elements
+- Fixed-height frames and `Spacer()` layouts holding text that must grow with Dynamic Type
+
 ## Naming convention
 
 Use this structured pattern for identifiers:
@@ -162,6 +257,29 @@ surrounding code. The identifier should be self-describing — someone reading
 `"technique_editor_save_button"` in a log should immediately know the domain,
 screen, and element without looking up code.
 
+### Declare identifiers once, not at every call site
+
+An identifier exists to be matched by something else — a UI test, an agent script. A literal
+typed into the view and typed again into the test is two strings that agree today and drift
+silently later; the test keeps passing against an element that no longer exists, or matches
+nothing and fails for a reason that looks like a UI bug.
+
+Prefer a single namespace, added to both the app target and the UI test target:
+
+```swift
+enum AccessibilityIdentifier {
+    static let creationLockButton = "creation_button_lock"
+    static let creationConfirmLockButton = "creation_button_confirm_lock"
+
+    /// Rows need a per-item identifier; key it on something stable across relaunches.
+    static func historyRow(id: UUID) -> String { "history_row_\(id)" }
+}
+```
+
+Offer this when the project has a UI test target or an agent-driven test setup. If the user
+prefers literals, follow the convention above and keep them consistent — don't argue the point
+twice.
+
 ## How to write good labels, hints, and values
 
 ### Labels (`.accessibilityLabel()`)
@@ -171,16 +289,54 @@ screen, and element without looking up code.
 - Bad: `"Button"`, `"MarqueeText"`, `"Blue circle"`
 
 ### Hints (`.accessibilityHint()`)
-- Describe **what happens** when you interact
-- Use present tense, describe the consequence
+- Describe **what happens** when you interact, in present tense
 - Good: `"Validates and stores the current technique"`
 - Bad: `"Tap to save"` (VoiceOver already tells users to tap)
+- Bad: `"Saves"` on a button labelled "Save" — a hint that restates the label is pure noise,
+  and VoiceOver users hear it on every pass
+
+Hints are optional by design, and they are read after a pause on every focus. Add one where
+the consequence isn't obvious from the label — an action that is irreversible, one that
+navigates somewhere unexpected, or a control that is disabled and should say why:
+
+```swift
+.accessibilityHint(isReady
+    ? "Locks this goal for the rest of the week. It can't be changed afterwards."
+    : "Unavailable until both a title and a description are entered.")
+```
+
+Leaving a hint off a self-evident button is the correct outcome, not a gap. Count it `n/a`.
 
 ### Values (`.accessibilityValue()`)
 - The **current state** of the element
 - Only for elements with state (toggles, pickers, counters, list rows with data)
 - Good: `"3 of 5 selected"`, `"On"`, `"Page 2 of 4"`, `"\(position.transitionCount) transitions"`
 - Bad: (omit entirely if the element has no state — don't set an empty value)
+
+A visible counter next to a field is usually better expressed as that field's value than as
+its own element: `"7/10"` alone tells a VoiceOver user nothing, while
+`.accessibilityValue("7 of 10 characters")` on the field, with the visible counter hidden,
+puts the count where the user already is.
+
+## The five properties are not the whole job
+
+A pass that stops at modifiers will still fail a real accessibility review. When the user
+asks for an audit or a "pass" rather than a specific modifier, check these too and report
+them alongside — each is cheap to verify and expensive to retrofit:
+
+- **Dynamic Type.** Build the type scale on system text styles (`.title`, `.caption`), never
+  fixed point sizes. Then check the largest accessibility sizes: text that must not truncate
+  needs `fixedSize(horizontal: false, vertical: true)`, and a screen whose content overflows
+  at AX5 needs a `ScrollView`, not a smaller font.
+- **Contrast.** Every foreground/background pairing, in both light and dark appearance,
+  against WCAG AA (4.5:1 for body text). If the palette is expressed as values in code, this
+  is assertable in a unit test rather than checked by eye.
+- **Reduce Motion.** Read `@Environment(\.accessibilityReduceMotion)` and honour it at every
+  animation site — transitions and `withAnimation` blocks both.
+- **Locale.** Dates and times via `.formatted(...)`, never a hardcoded format string.
+
+Report these as their own section. Don't silently expand a narrow request ("add identifiers
+to this file") into a full pass — mention what you noticed and let the user decide.
 
 ## Modifier placement pattern
 
@@ -218,6 +374,9 @@ HStack(spacing: 12) {
 .accessibilityHint("Opens detailed information for \(position.name)")
 .accessibilityValue("\(position.transitionCount) transitions")
 ```
+
+Note that this row is safe to combine only because the whole row is the tap target. If the
+row contained its own button *and* a navigation link, they would need to stay separate.
 
 ## `.trackElement()` (opt-in)
 
@@ -296,15 +455,28 @@ Update view context on screen appear:
 }
 ```
 
+## Verifying the work
+
+Reading the diff proves the modifiers exist, not that the screen is usable. Where the project
+has a simulator workflow available, finish by checking the tree the app actually publishes:
+dump the accessibility hierarchy for each screen and confirm every action appears as its own
+element with a label, then sweep the largest Dynamic Type size and both appearances.
+
+The check that catches the combine traps: **count the actionable elements on screen, and
+confirm the same number appear in the accessibility tree.** A button that vanished into a
+combined parent is invisible in a diff and obvious in the dump.
+
 ## Quality checks
 
 After fixing a file, verify:
 
-1. Every interactive element has at least `identifier` + `label`
-2. Every element with an action has `hint`
-3. Every element with state has `value`
-4. Decorative elements are hidden
-5. View-level containers have identifiers
-6. Identifiers follow the naming convention
-7. Labels describe meaning, not appearance
-8. No duplicate identifiers within the same view
+1. No combined element swallows a button, link, or tap gesture
+2. Every explicit label over combined children still states every fact the element displays
+3. Every interactive element has at least `identifier` + `label`
+4. Hints appear where the outcome isn't obvious, and nowhere else
+5. Every element with state has `value`
+6. Decorative elements are hidden, and nothing is announced twice
+7. View-level containers have identifiers
+8. Identifiers follow the naming convention and are declared once, not duplicated into tests
+9. Labels describe meaning, not appearance
+10. No duplicate identifiers within the same view

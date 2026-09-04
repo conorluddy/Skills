@@ -12,7 +12,7 @@
     {
       "name": "swift-accessibility-plugin",
       "source": "./plugins/swift-accessibility-plugin",
-      "description": "Audit, fix, and initialise SwiftUI accessibility modifiers so your app is navigable by both VoiceOver users and AI agents"
+      "description": "Audit and fix SwiftUI accessibility for VoiceOver, XCUITest and AI agents — including the modifiers that silently remove accessibility, and the Dynamic Type, contrast and Reduce Motion checks a modifier pass alone misses"
     },
     {
       "name": "liquid-glass-plugin",
