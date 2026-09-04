@@ -10,7 +10,7 @@ My Claude Code plugin marketplace for distributing reusable skills.
 | Plugin | Description |
 |--------|-------------|
 | **github-labels** | Structured GitHub issue labels — priority, clarity, risk, blast radius, size, parallelism, sequencing, and type |
-| **swift-accessibility** | Audit, fix, and scaffold SwiftUI accessibility modifiers for VoiceOver and AI agents |
+| **swift-accessibility** | Audit and fix SwiftUI accessibility for VoiceOver and AI agents, including the modifiers that silently remove it |
 | **liquid-glass** | iOS 26 Liquid Glass effects in SwiftUI and UIKit — API reference, design rules, and patterns |
 | **sonos-cli** | Control Sonos speakers — playback, volume, grouping, queue management, and music search |
 | **openhue** | Control Philips Hue lights — brightness, color, scenes, and automation |
